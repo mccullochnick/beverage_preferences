@@ -10,12 +10,12 @@ The initial dataset consists of 1.5 million consumer reviews provided by BeerAdv
 
 ## Files
 
-| File | Description |
-| ----------- | ----------- |
-| beer_data.csv | the project dataset |
-| beverage_pref.Rmd | the project markdown |
-| beverage_pref.HTML | the knitted document |
-| consumer preferences report | the accompanying research paper |
+| Name | Description | Type |
+| ----------- | ----------- | ----------- |
+| beer_data | the project dataset | .CSV |
+| beverage_pref | the project markdown | .RMD |
+| beverage_pref | the knitted document | .PDF |
+| consumer preferences report | the accompanying research paper | .DOCX |
 
 ## Authors
 * [@mccullochnick](https://github.com/mccullochnick)

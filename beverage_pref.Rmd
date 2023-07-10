@@ -1,0 +1,472 @@
+---
+title: "Beverage Review Project"
+author: "Nick McCulloch"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  word_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo = T, warning = F, message = F)
+```
+
+# Introduction
+
+## Project Description
+
+The purpose of this project is to better understand factors that contribute to consumer ratings for particular beverages, namely, beer. The beer industry is booming in the American market, with consumers switching slowly from drinks with a high alcohol percentage to lighter and more refreshing beverages. Consumer trends can be seen in overall beverage ratings and in ratings for subcategories such as palate, aroma, or Alcohol By Volume. By focusing on these essential categories, key predictors can be identified and used to direct further development.
+
+## Data Description
+
+The initial dataset consists of 1.5 million consumer reviews provided by BeerAdvocate.com, a site where "beer geeks and industry professionals" can submit numeric and written reviews on a wide array of beverages. The focus of the project is larger trends in consumer preferences across products so this data has been filtered to exclude products with fewer than 500 reviews, aggregated by style and filtered again to exclude any style with fewer than 5 products. The resulting dataset consists of 25 styles, 275 individual products, and 270,323 individual consumer reviews.
+
+The variable of interest is the Overall Score of a drink on a continuous scale from 0 to 5, with a score of 5.0 being the highest.
+
+The key predictors are Beer Style Category (BSC), Review Count, Alcohol by Volume (ABV), Aroma Score, Appearance Score, Palate Score, and Taste Score.
+
+## Packages
+
+```{r Packages, message=TRUE, warning=FALSE}
+library(pacman)
+
+p_load(stats, lmtest, dplyr, klaR, car, glmnet, pls, ggplot2, patchwork, ggthemes, reshape2)
+```
+
+## Reading Data
+
+```{r}
+# Reading in the data with strings as factors b/c of text in style column
+beer_data <- read.table("beer_data.csv", header = T, sep = ",", stringsAsFactors = T)
+
+# Checking the data size, columns, class, etc.
+head(beer_data)
+
+names(beer_data)
+
+str(beer_data)
+
+data_summary <- summary(beer_data)
+```
+
+The number of reviews per product and ABV has the highest variance among predictors. The median number of reviews per product is 772 and the range is 2,500 and a standard deviation (SD) of 510.62. ABV has a median of 7.10, a range of 13.50, and an SD of 2.42. All the other predictors have medians between 3.99 (review taste) and 4.07 (review appearance) with ranges from 2.23 (review overall) to 2.62 (review aroma). The overall review score has a mean of 3.962, a median of 4.02, and a range of 2.253. Considering that the maximum overall review score is out of 5, the range of scores varies by as much as 45% of the highest possible score. With the exception of review count and ABV, all the other predictors show strong negative skewness (to the left) with values from -1.43 (review palate) to -1.92 (review appearance). All predictors show positive kurtosis implying there are more extreme values in each predictor than in a normal distribution and have fatter tails. Review appearance has the highest level of positive kurtosis (6.28) followed by the overall score with 5.53.
+
+# Preliminary Tests and Transformations
+
+## Test Plot
+
+```{r}
+# quick check with base R plot to get sense of data.
+plot(beer_data$style, beer_data$overall)
+```
+
+## Transformations
+
+```{r}
+# transforming 'styles' strings to lower case to improve spacing
+
+beer_data$style <- tolower(beer_data$style)
+
+# replacing american double to shorten string
+
+beer_data$style <- gsub("american double", "us_double", beer_data$style)
+
+beer_data$style <- factor(beer_data$style)
+```
+
+## Improved Test Plot
+
+```{r}
+# Now an improved boxplot
+a_data <- ggplot(beer_data, aes(x = overall, y = reorder(style, overall)))
+
+a_graph <- geom_boxplot()
+
+a_theme <- theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, margin = margin(t = 1, r = 20, b = 1, l = 0)))
+
+a_labs <- labs(title = "Beer Style by Score", x = NULL, y = NULL)
+
+# a_scale <- scale_y_discrete(guide = guide_axis(check.overlap = T))
+
+a_data + a_graph + a_theme + a_labs #+ a_scale
+```
+
+## Further Transformations
+
+```{r}
+# creating column of average overall scores by style.
+style_avg <- beer_data %>%
+  group_by(style) %>%
+  summarise(mean_style = mean(overall))
+
+print(style_avg[order(style_avg$mean_style), ])
+```
+
+## Basic Linear Model
+
+```{r}
+lm_basic <- lm(overall ~ ., data = beer_data)
+
+basic_summary <- summary(lm_basic)
+
+basic_summary
+```
+
+## Residual Plots and Breusch-Pagan
+
+```{r}
+par(mfrow = c(2, 2))
+plot(lm_basic)
+```
+
+The residuals/fitted plot isn't perfect with the largest deviation from linearity to the right. The QQ plot shows mildly fat tails, indicating more data located at the extremes. The scale location plot is neither horizontal nor evenly spread, indicating heteroskedasticty. The residuals vs leverage plot does indicate some notable outliers, including one that is 3.5x the mean.
+
+```{r}
+bptest(lm_basic, data = beer_data)
+```
+
+The BP test strongly suggests heteroskedasticity.
+
+## Visual Check for Multicollinearity
+
+```{r }
+par(mfrow = c(2, 2))
+
+attach(beer_data)
+plot(appearance, aroma, main = "appearance vs. aroma")
+plot(appearance, taste, main = "appearance vs. taste")
+plot(taste, aroma, main = "taste vs. aroma")
+plot(taste, palate, main = "taste vs. palate")
+```
+
+```{r}
+# excluding 'style' from the corr plot, which is the only non-numeric column
+corr_data <- beer_data[-1]
+
+# creating correlation matrix
+corr_mat <- round(cor(corr_data), 2)
+
+# sorting matrix for easier interpretation
+dist <- as.dist((1 - corr_mat) / 2)
+
+# clustering the dist matrix
+hclust <- hclust(dist)
+corr_mat <- corr_mat[hclust$order, hclust$order]
+
+# reduce the size of correlation matrix
+melted_corr_mat <- melt(corr_mat)
+
+# plotting the correlation heatmap
+ggplot(data = melted_corr_mat, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  labs(title = "Correlation Heatmap")
+```
+
+Somewhat unsurprisingly, similar or related categories in the data like 'taste' and 'aroma' seem to be correlated. The plots above demonstrate the severe multicollinearity found in the data.
+
+```{r}
+par(mfrow = c(1, 2))
+
+plot(revcount, overall, main = "review count vs. overall score")
+plot(abv, overall, main = "Alcohol By Volume vs. Overall Score")
+```
+
+There is not a similar level of correlation observed between overall score and ABV or number of reviews.
+
+# Main Analysis and Model Testing
+
+## Weighted Least Squares (WLS)
+
+The multicollinearity and heteroskedasticity found above suggested the need to test a WLS model, and because the residuals have a Gaussian distribution, a GLM model, as well.
+
+```{r}
+# First extracting fitted values from the model to create weights
+fitted_ols <- fitted(lm_basic)
+
+abs_res <- abs(residuals(lm_basic))
+
+cbind(fitted_ols, abs_res)[1:10, ]
+
+lm_abs_res <- lm(abs_res ~ fitted_ols)
+
+# sanity check
+# fitted(lm_abs_res)[1:10]
+
+fit_df <- as.data.frame(cbind(fitted_ols, abs_res))
+
+# plotting the values
+ggplot(data = fit_df, aes(x = fitted_ols, y = abs_res)) +
+  geom_point() +
+  stat_smooth(method = "lm", se = FALSE) +
+  labs(title = "Fitted OLS by Absolute Residuals")
+
+# saving the weights to new variable
+wts <- 1 / fitted(lm_abs_res)^2
+
+# fiting WLS and WGLM models using the weights
+fit_wls <- lm(overall ~ ., data = beer_data, weights = wts)
+
+fit_wglm <- glm(overall ~ ., data = beer_data, weights = wts)
+
+# creating summaries of the new models for comparison
+sum_lm_basic <- summary(lm_basic) # R-squared 0.9641
+sum_fit_wglm <- summary(fit_wglm)
+sum_fit_wls <- summary(fit_wls) # R-squared - 0.9548
+
+paste("lm basic-adjusted r-squared: ", format(sum_lm_basic$adj.r.squared, digits = 4))
+paste("fit_wls-adjusted r-squared: ", format(sum_fit_wls$adj.r.squared, digits = 4))
+```
+
+## WGLM
+
+```{r}
+# first running regression with exisiting levels
+
+beer_fit <- glm(overall ~ ., data = beer_data)
+
+basic_sum <- summary(lm_basic)
+
+fit_sum <- summary(beer_fit)
+
+# extracting the coefficients, droppping non-style coefs, reordering, and rounding
+# could have used coef(summary(x)) instead.
+basic_coef <- data.frame(basic_sum$coefficients)
+basic_coef <- basic_coef[!(row.names(basic_coef) %in% c("abv", "appearance", "aroma", "palate", "taste", "revcount", "(Intercept)")), ]
+basic_coef <- round(basic_coef, 4)
+basic_coef$coefficients <- rownames(basic_coef)
+basic_coef <- basic_coef[, c(5, 1, 2, 3, 4)]
+
+fit_coef <- data.frame(fit_sum$coefficients)
+fit_coef <- fit_coef[!(row.names(fit_coef) %in% c("abv", "appearance", "aroma", "palate", "taste", "revcount", "(Intercept)")), ]
+fit_coef <- round(fit_coef, 4)
+fit_coef$coefficients <- rownames(fit_coef)
+fit_coef <- fit_coef[, c(5, 1, 2, 3, 4)]
+
+# extracting style with highest p-value and lowest estimate
+attach(basic_coef)
+level_data <- rbind(
+  basic_coef[Pr...t.. == max(Pr...t..), ],
+  basic_coef[Estimate == max(Estimate), ]
+)
+detach(basic_coef)
+attach(fit_coef)
+level_data <- rbind(
+  level_data, fit_coef[Pr...t.. == max(Pr...t..), ],
+  fit_coef[Estimate == max(Estimate), ]
+)
+rownames(level_data) <- c("basic coef-highest p-value:", "basic coef-lowest estimate:", "fit_coef-highest p-value:", "fit_coef-lowest estimate:")
+detach(fit_coef)
+
+print(level_data[, c(1, 2, 5)])
+```
+
+'American Pale Wheat Ale' has the lowest estimate and 'Hefeweizen' turns out to have the highest p-value value, making either a good candiate for a releveled reference.
+
+## Releveled WGLM
+
+```{r}
+beer_datarlv <- beer_data
+
+# releveling the factors
+beer_datarlv$style <- relevel(beer_datarlv$style, ref = "american pale wheat ale")
+
+# sanity check
+# levels(beer_datarlv$style)
+
+# fitting releveld model
+beer_rlv <- glm(overall ~ ., data = beer_datarlv)
+```
+
+```{r}
+# anova table for the new model.
+anova(beer_rlv)
+```
+
+```{r}
+# creating more readable summary for the coefficients
+rlv_summ <- summary(beer_rlv)
+
+rlv_coefs <- data.frame(rlv_summ$coefficients)
+
+rlv_coefs <- rlv_coefs[order(rlv_coefs$Estimate), ]
+
+pv <- rlv_coefs[, "Pr...t.."]
+
+signif <- symnum(pv,
+  corr = FALSE, na = FALSE,
+  cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+  symbols = c("***", "**", "*", ".", " ")
+)
+
+legend <- attr(signif, "legend")
+
+signif <- as.vector(signif)
+
+rlv_coefs <- cbind(rlv_coefs, signif)
+
+# [1] 0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+rlv_coefs <- rlv_coefs[, 1:5]
+rlv_coefs
+```
+
+## Cross-validation -- comparing OLS to GLM
+
+## Condition Index
+
+```{r}
+# library(klaR)
+ci_basic <- cond.index(lm_basic, data = beer_data)
+ci_basic[length(ci_basic)]
+
+ci_glm <- cond.index(beer_rlv, data = beer_data)
+ci_glm[length(ci_glm)]
+```
+
+The high condition index indicates both models suffer from severe multicollinearity (as indicated in the previous plots).
+
+```{r}
+# fitting an ad-hoc model that excludes several of the correlated variables.
+new_lm <- glm(overall ~ abv + appearance + taste + revcount + style, data = beer_data)
+ci_new <- cond.index(new_lm, data = beer_data)
+ci_new[length(ci_new)]
+```
+
+The model above excludes the 'aroma' and 'palate' variables which seemed to be highly correlated with 'taste'. The resulting condition index is significantly improved.
+
+## VIF
+
+```{r}
+# library(car)
+print("lm_basic_vif")
+vif(lm_basic)
+
+print("new_lm_vif")
+vif(new_lm)
+```
+
+Calculating the VIF for both models offers further support for the conclusion that there is severe multicollinearity. The initial model has VIF's over 5 for 'aroma', 'palate', and 'taste'. By contrast the reduced model, 'lm_new', which excluded 'aroma' and 'palate' shows no variable with a VIF over 5. This suggests that variable selection to reduce the predictor variables would be helpful.
+
+## Ridge Prep - Splitting and Training the Data
+
+Ridge regression is a suitable method for variable selection but requires some preparation.
+
+```{r}
+# creating training and test datasets
+RNGkind(sample.kind = "default")
+options(scipen = 4)
+
+paste("total rows: ", nrow(beer_data))
+
+tr_size <- 0.8
+train <- sample(nrow(beer_data), tr_size * nrow(beer_data))
+
+beer_train <- beer_data[train, ]
+paste("training data rows: ", nrow(beer_train))
+
+beer_test <- beer_data[-train, ]
+paste("test data rows: ", nrow(beer_test))
+
+paste(c("training data sample:", train[1:10]), collapse = " ")
+
+# fitting model to training data
+
+fit_train <- lm(overall ~ ., data = beer_train)
+train_mse <- mean(fit_train$residuals^2)
+c("Train MSE" = train_mse, "Train RMSE" = sqrt(train_mse))
+```
+
+## Random Split Cross-Validation Test MSE
+
+```{r}
+# fitting model to test data
+pred_test <- predict(fit_train, beer_test)
+test_mse_rs <- mean((beer_test$overall - pred_test)^2)
+c("RSCV Test MSE" = test_mse_rs, "RSCV Test RMSE" = sqrt(test_mse_rs))
+```
+
+## Ridge
+
+```{r}
+x <- model.matrix(overall ~ ., data = beer_data)[, -1]
+y <- beer_data$overall
+
+# first creating ridge reg. without specifying lambda
+ridge_reg <- glmnet(x, y, alpha = 0)
+
+plot(ridge_reg)
+
+# now recreating with cv.glmnet to find optimal lambda
+ridge_reg_cv10 <- cv.glmnet(x, y, alpha = 0)
+
+lambda_vec <- round(cbind("Lambda" = ridge_reg_cv10$lambda, "10FCV" = ridge_reg_cv10$cvm), digits = 3)
+
+plot(ridge_reg_cv10)
+
+# the best lamdas can be seen here
+top_5_lambdas <- tail(lambda_vec)
+# top_5_lambdas
+
+# finding best lambda and best cv_ridge
+ridge_best_lambda <- ridge_reg_cv10$lambda.min
+
+min_cv_ridge <- min(ridge_reg_cv10$cvm)
+```
+
+```{r}
+round(cbind("Best Lambda" = ridge_best_lambda, "Best 10FCV" = min_cv_ridge), digits = 3)
+```
+
+```{r}
+best_model <- glmnet(x, y, alpha = 0, lambda = ridge_best_lambda)
+
+# tidying data for easier interpretation
+best_matrix <- as.matrix(coef(best_model))
+best_matrix <- cbind(row.names(best_matrix), best_matrix)
+best_matrix <- data.frame(best_matrix)
+best_matrix <- best_matrix[order(best_matrix$s0), ]
+colnames(best_matrix) <- c("variable", "coef")
+rownames(best_matrix) <- 1:nrow(best_matrix)
+best_matrix
+```
+
+The smaller values of lambda produced smaller cross-validation MSE. The best lambda 0.027 produced the smallest CV-MSE of 0.007, suggesting the shrinkage is closer to the coefficients of the OLS model. The ridge model with teh best lambda has minimal bias.
+
+## PCR
+
+A PCR test allows further tests of dimensionality and multicollinearity.
+
+```{r}
+# library(pls)
+
+pcr_fit <- pcr(overall ~ ., data = beer_data, scale = T, validation = "CV")
+summary(pcr_fit)
+
+validationplot(pcr_fit, val.type = "MSEP")
+```
+
+The results of the scree plot and numeric output show the 30 component model has the best CV RMSE, showing the results are the same as the OLS and GLM model. The 30 component model is also best for interpretability and predictive accuracy.
+
+# Conclusions
+
+**Consumer Preference and Beverages**
+
+Several conclusions can be drawn regarding consumer beverage preferences. It turns out the drinks consumers prefer the most are the ones that they think taste the best, which we can see because 'taste' turns out to be the variable with the greatest positive correlation with overall score. Consumers seem to prefer hefeweizens and dislike vegetable or fruit beers, and drinks with a high ABV. However, these preferences should be taken with a grain of salt. The severe multicollinearity found for 'taste', 'palate' and 'aroma' indicates that these distinctions might be lost on customers, or alternatively that there's more fuss made of these terms than is actually warranted.
+
+**Statistical Analysis and Conclusions**
+
+Overall, the weighted GLM model is the superior model because it addresses the truncated nature of the outcome variable, overall beer rating. The weighting of coefficients also reduces the variation and produces a more stable model. As the residuals follow a Gaussian distribution, the GLM produces the same results as the OLS model, which is better for interpretability and explainability. We found that taste had the largest effect on the overall rating at 1.286 and it is the only predictor with a positive effect. The categorical predictor with the largest effect is vegetable-style beer, -0.017
+
+**Challenges and Lessons Learned**
+
+The data set had significant number of factors, which proved both challenging and interesting to work with. Many of the models were difficult to interpret because of the sheer number of variables involved. While these many variables added significant length to the outputs, they only provided limited insights. In future studies it would make sense to first run a regression to determine the most popular category, and then run regressions within that category to find the most determinative variables. Another option would be to run preliminary models to reduce the number or effect of categorical variables such as stepwise, Ridge, or LASSO. The combination of a large number of categorical variables and several continuous variables increased the difficulty of selecting models and creating visually useful plots.
+
+Another issue is that the number of reviews (revcount) varies significantly. This variation proved to be statistically significant in the models. That may be a useful insight on its own. However, it may make sense to weight the number of reviews per product or extract a random sample to get a similarly sized and normally distributed sample for each product so that that variation could be accounted for.
+
+The model also demonstrated significant multicollinearity and heteroskedasticity. As is seen in the correlation matrix and BP test. So methods to account for that are key.
